@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cassert>
 #include <vector>
+#include <iostream>
+#include <chrono>
 
 namespace
 {
@@ -53,52 +55,60 @@ namespace
 	};
 };
 
-Population::Population(SizeType populationSize, SizeType chromosomeSize, float selectionRatio, std::shared_ptr<Game>& game)
-	: m_Chromosomes(populationSize)
-	, m_ChromosomeSize(chromosomeSize)
-	, m_Game(game)
-	, m_Fittest(0)
-	, m_SelectionRatio(selectionRatio)
+Population::Chromosome Population::FindSolution(SizeType populationSize,
+	SizeType chromosomeSize,
+	float selectionRatio,
+	std::shared_ptr<Game>& game)
 {
 	m_Chromosomes.resize(populationSize);
 	m_ChromosomeSize = chromosomeSize;
+	m_Game = game;
+	m_Fittest = 0;
+	m_SelectionRatio = selectionRatio;
 
-	for (SizeType i = 0; i < populationSize; ++i)
+	unsigned allThreads = std::thread::hardware_concurrency();
+	if (allThreads == 0)
+	{
+		SingleThreadRoutine();
+	}
+	else
+	{
+		/// Number of cores
+		MultiThreadRoutine(allThreads / 2);
+	}
+
+	return m_Chromosomes[m_Fittest];
+}
+
+void Population::SingleThreadRoutine()
+{
+	for (SizeType i = 0; i < m_Chromosomes.size(); ++i)
 	{
 		RandomizeChromosome(m_Chromosomes[i]);
 	}
 
 	CalculateFitness();
-}
 
-void Population::NextGeneration()
-{
-	std::vector<Chromosome> newChromosomes;
-	newChromosomes.reserve(m_Chromosomes.size());
-
-	Selection(newChromosomes);
-
-	unsigned threadCount = std::thread::hardware_concurrency() / 2;
-
-	if (threadCount == 0)
+	long long generation = 1;
+	while (!FoundSolution())
 	{
-		SingleThreadRoutine(newChromosomes);
-		return;
+		auto start = std::chrono::high_resolution_clock::now();
+
+		std::vector<Chromosome> newChromosomes;
+
+		SelectionSingleThread(newChromosomes);
+		CrossoverSingleThread(newChromosomes);
+		MutationSingleThread(newChromosomes);
+
+		m_Chromosomes.swap(newChromosomes);
+
+		CalculateFitness();
+
+		auto end = std::chrono::high_resolution_clock::now();
+		std::cout << "Generation time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms"
+			<< " Fittest: " << GetFittest().Fitness
+			<< " generation: " << ++generation << "\n";
 	}
-	else
-	{
-		MultiThreadRoutine(newChromosomes, threadCount);
-	}
-}
-
-void Population::SingleThreadRoutine(std::vector<Chromosome>& newChromosomes)
-{
-	CrossoverSingleThread(newChromosomes);
-	MutationSingleThread(newChromosomes);
-
-	m_Chromosomes.swap(newChromosomes);
-
-	CalculateFitness();
 }
 
 void Population::FindFittest()
@@ -113,8 +123,60 @@ void Population::FindFittest()
 	}
 }
 
-void Population::LaunchThreads(std::vector<Chromosome>& newChromosomes, unsigned threadsCount, std::vector<std::thread>& threads)
+void Population::ThreadInitializeChromosomes(SizeType start, SizeType end)
 {
+	while (start < end)
+	{
+		RandomizeChromosome(m_Chromosomes[start]);
+		m_Chromosomes[start].Fitness = CalculateFitness(m_Chromosomes[start]);
+		++start;
+	}
+}
+
+void Population::MultiThreadInitializeChromosomes(unsigned threadsCount)
+{
+	std::vector<std::thread> initializerThreads(threadsCount);
+
+	SizeType chunk = static_cast<SizeType>(std::ceil(static_cast<float>(m_Chromosomes.size()) / threadsCount));
+
+	SizeType chunkStart = 0;
+	for (unsigned t = 0; t < threadsCount - 1; ++t)
+	{
+		SizeType chunkEnd = chunkStart + chunk;
+		initializerThreads[t] = std::thread(&Population::ThreadInitializeChromosomes, this, chunkStart, chunkEnd);
+		chunkStart = chunkEnd;
+	}
+
+	initializerThreads[threadsCount - 1] = std::thread(&Population::ThreadInitializeChromosomes,
+		this,
+		chunkStart,
+		static_cast<SizeType>(m_Chromosomes.size()));
+
+	for (unsigned t = 0; t < threadsCount; ++t)
+	{
+		initializerThreads[t].join();
+	}
+
+	FindFittest();
+}
+
+void Population::MultiThreadRoutine(unsigned threadsCount)
+{
+	MultiThreadInitializeChromosomes(threadsCount);
+
+	if (FoundSolution())
+	{
+		return;
+	}
+
+	std::vector<Chromosome> newChromosomes;
+	newChromosomes.resize(m_Chromosomes.size());
+
+	MultiThreadSelection(newChromosomes);
+
+	std::vector<std::thread> threads(threadsCount);
+	m_ThreadsWorkingWaitGroup.reset(threadsCount);
+
 	SizeType selected = static_cast<SizeType>(std::floor(m_Chromosomes.size() * m_SelectionRatio));
 	/// Skip elites because they will not be changed.
 	SizeType chromosomesPerThread = static_cast<SizeType>(std::ceil((m_Chromosomes.size() - selected) / threadsCount));
@@ -123,7 +185,7 @@ void Population::LaunchThreads(std::vector<Chromosome>& newChromosomes, unsigned
 	for (unsigned i = 0; i < threadsCount - 1; ++i)
 	{
 		SizeType endChunk = startChunk + chromosomesPerThread;
-		threads[i] = std::thread(&Population::ThreadCrossMutateCalcFitness,
+		threads[i] = std::thread(&Population::ThreadRoutine,
 			this,
 			std::ref(newChromosomes),
 			startChunk,
@@ -133,28 +195,78 @@ void Population::LaunchThreads(std::vector<Chromosome>& newChromosomes, unsigned
 	}
 
 	/// Last chunk might have a different size.
-	threads[threadsCount - 1] = std::thread(&Population::ThreadCrossMutateCalcFitness,
+	threads[threadsCount - 1] = std::thread(&Population::ThreadRoutine,
 		this,
 		std::ref(newChromosomes),
 		startChunk,
-		m_Chromosomes.size());
-}
+		static_cast<SizeType>(m_Chromosomes.size()));
 
-void Population::MultiThreadRoutine(std::vector<Chromosome>& newChromosomes, unsigned threadsCount)
-{
-	newChromosomes.resize(m_Chromosomes.size());
+	auto start = std::chrono::high_resolution_clock::now();
+	long long generation = 1;
+	while (true)
+	{
+		m_ThreadsWorkingWaitGroup.wait();
 
-	std::vector<std::thread> threads(threadsCount);
-	LaunchThreads(newChromosomes, threadsCount, threads);
+		m_Chromosomes.swap(newChromosomes);
+
+		FindFittest();
+
+		if (FoundSolution())
+		{
+			break;
+		}
+
+		auto end = std::chrono::high_resolution_clock::now();
+		std::cout << "Generation time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms"
+			<< " Fittest: " << GetFittest().Fitness
+			<< " generation: " << ++generation << "\n";
+
+		start = std::chrono::high_resolution_clock::now();
+		MultiThreadSelection(newChromosomes);
+
+		m_ThreadsWorkingWaitGroup.reset(threadsCount);
+		m_ThreadsReadyForWorkWaitGroup.done();
+	}
+
+	m_ThreadsReadyForWorkWaitGroup.done();
 
 	for (unsigned i = 0; i < threadsCount; ++i)
 	{
 		threads[i].join();
 	}
+}
 
-	m_Chromosomes.swap(newChromosomes);
+void Population::ThreadRoutine(std::vector<Chromosome>& newChromosomes, SizeType start, SizeType end)
+{
+	while (!FoundSolution())
+	{
+		ThreadCrossover(newChromosomes, start, end);
+		ThreadMutation(newChromosomes, start, end);
+		ThreadCalculateFitness(newChromosomes, start, end);
 
-	FindFittest();
+		std::sort(newChromosomes.begin() + start, newChromosomes.begin() + end, [](const Chromosome& lhs, const Chromosome& rhs) {
+			return lhs.Fitness > rhs.Fitness;
+		});
+
+		m_ThreadsWorkingWaitGroup.done();
+		m_ThreadsWorkingWaitGroup.wait();
+		m_ThreadsReadyForWorkWaitGroup.reset(1);
+		m_ThreadsReadyForWorkWaitGroup.wait();
+	}
+}
+
+void Population::MultiThreadSelection(std::vector<Chromosome>& newChromosomes)
+{
+	std::sort(m_Chromosomes.begin(), m_Chromosomes.end(), [](const Chromosome& lhs, const Chromosome& rhs) {
+		return lhs.Fitness > rhs.Fitness;
+	});
+
+	SizeType selected = static_cast<SizeType>(std::floor(m_Chromosomes.size() * m_SelectionRatio));
+
+	for (SizeType i = 0; i < selected; ++i)
+	{
+		newChromosomes[i] = m_Chromosomes[i];
+	}
 }
 
 void Population::RandomizeChromosome(Chromosome& chromosome)
@@ -248,7 +360,7 @@ Population::Fitness Population::CalculateFitness(const Chromosome& chromosome)
 	return fitness;
 }
 
-void Population::Selection(std::vector<Chromosome>& newChromosomes)
+void Population::SelectionSingleThread(std::vector<Chromosome>& newChromosomes)
 {
 	std::sort(m_Chromosomes.begin(), m_Chromosomes.end(), [](const Chromosome& lhs, const Chromosome& rhs) {
 		return lhs.Fitness > rhs.Fitness;
@@ -354,12 +466,12 @@ void Population::MutationSingleThread(std::vector<Chromosome>& newChromosomes)
 	auto chromosomeIterator = newChromosomes.begin() + elites;
 	while (chromosomeIterator != newChromosomes.end())
 	{
-		// 12.5%
+		/// 12.5%
 		if (coin.Flip() == Coin::Face::Head && coin.Flip() == Coin::Face::Head && coin.Flip() == Coin::Face::Head)
 		{
 			SequentialMutation(*chromosomeIterator);
 		}
-		// 25%
+		/// 25%
 		else if (coin.Flip() == Coin::Face::Head && coin.Flip() == Coin::Face::Head)
 		{
 			RandomMutation(*chromosomeIterator);
@@ -386,12 +498,12 @@ void Population::ThreadMutation(std::vector<Chromosome>& newChromosomes, SizeTyp
 	SizeType currentChromosome = start;
 	while (currentChromosome < end)
 	{
-		// 12.5%
+		/// 12.5%
 		if (coin.Flip() == Coin::Face::Head && coin.Flip() == Coin::Face::Head && coin.Flip() == Coin::Face::Head)
 		{
 			SequentialMutation(newChromosomes[currentChromosome]);
 		}
-		// 25%
+		/// 25%
 		else if (coin.Flip() == Coin::Face::Head && coin.Flip() == Coin::Face::Head)
 		{
 			RandomMutation(newChromosomes[currentChromosome]);
@@ -428,9 +540,3 @@ void Population::ThreadCrossover(std::vector<Chromosome>& newChromosomes, SizeTy
 	}
 }
 
-void Population::ThreadCrossMutateCalcFitness(std::vector<Chromosome>& newChromosomes, SizeType start, SizeType end)
-{
-	ThreadCrossover(newChromosomes, start, end);
-	ThreadMutation(newChromosomes, start, end);
-	ThreadCalculateFitness(newChromosomes, start, end);
-}

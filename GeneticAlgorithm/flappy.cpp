@@ -6,7 +6,7 @@
 #include <iostream>
 #include <chrono>
 
-static const Population::SizeType POPULATION_SIZE = 100;
+static const Population::SizeType POPULATION_SIZE = 10000;
 static const float SELECTION_RATIO = 0.2f;
 
 int main()
@@ -17,22 +17,12 @@ int main()
 		JUMP_ACCELERATION,
 		LevelDescription{ 1000, 100 });
 
-	Population population(POPULATION_SIZE,
+	Population population;
+
+	population.FindSolution(POPULATION_SIZE,
 		static_cast<Population::SizeType>(std::floor(game->Level.width / HORIZONTAL_VELOCITY)),
 		SELECTION_RATIO,
 		game);
-
-	long long generation = 1;
-	while (!population.FoundSolution())
-	{
-		auto start = std::chrono::high_resolution_clock::now();
-		population.NextGeneration();
-		auto end = std::chrono::high_resolution_clock::now();
-
-		std::cout << "Generation time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms"
-			<< " Fittest: " << population.GetFittest().Fitness
-			<< " generation: " << ++generation << "\n";
-	}
 
 	return 0;
 }
