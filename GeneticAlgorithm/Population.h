@@ -41,6 +41,9 @@ private:
 
 	void Selection(std::vector<Chromosome>& newChromosomes);
 	void Crossover(std::vector<Chromosome>& newChromosomes);
+
+	void RandomMutation(Chromosome& mutated);
+	void SequentialMutation(Chromosome& mutated);
 	void Mutation(std::vector<Chromosome>& newChromosomes);
 
 	std::vector<Chromosome> m_Chromosomes;

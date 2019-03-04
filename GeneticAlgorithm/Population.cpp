@@ -8,6 +8,9 @@
 
 namespace
 {
+	static const unsigned MIN_MUTATION_SEQUENCE = 2;
+	static const unsigned MAX_MUTATION_SEQUENCE = 5;
+
 	struct Randomizator
 	{
 		mutable std::mt19937 generator;
@@ -20,7 +23,7 @@ namespace
 			generator.seed(std::random_device()());
 		}
 
-		int Get() const
+		unsigned Get() const
 		{
 			return distribution(generator);
 		}
@@ -182,7 +185,7 @@ void Population::Selection(std::vector<Chromosome>& newChromosomes)
 
 	for (SizeType i = 0; i < selected; ++i)
 	{
-		newChromosomes.push_back(std::move(m_Chromosomes[i]));
+		newChromosomes.push_back(m_Chromosomes[i]);
 	}
 }
 
@@ -193,7 +196,7 @@ namespace
 		assert(first.Genes.size() == second.Genes.size());
 
 		Population::SizeType chromosomeSize = static_cast<Population::SizeType>(first.Genes.size());
-		Population::SizeType crossoverPoint = chromosomeSize / 2;
+		Population::SizeType crossoverPoint = first.Fitness;
 
 		Population::Chromosome child;
 		child.Genes.resize(chromosomeSize);
@@ -213,13 +216,20 @@ namespace
 
 void Population::Crossover(std::vector<Chromosome>& newChromosomes)
 {
-	Randomizator randomizatorSelected(0, static_cast<unsigned>(newChromosomes.size() - 1));
-	Randomizator randomizatorRest(static_cast<unsigned>(newChromosomes.size()), static_cast<unsigned>(m_Chromosomes.size() - 1));
+	Randomizator randomizatorElites(0, static_cast<unsigned>(newChromosomes.size() - 1));
+	Randomizator randomizatorAll(0, static_cast<unsigned>(m_Chromosomes.size() - 1));
 
 	while (newChromosomes.size() < m_Chromosomes.size())
 	{
-		Chromosome& first = newChromosomes[randomizatorSelected.Get()];
-		Chromosome& second = m_Chromosomes[randomizatorRest.Get()];
+		SizeType firstIndex = randomizatorElites.Get();
+		SizeType secondIndex = randomizatorAll.Get();
+		while (firstIndex == secondIndex)
+		{
+			secondIndex = randomizatorAll.Get();
+		}
+
+		Chromosome& first = m_Chromosomes[firstIndex];
+		Chromosome& second = m_Chromosomes[secondIndex];
 
 		newChromosomes.push_back(DoCrossover(first, second));
 		newChromosomes.push_back(DoCrossover(second, first));
@@ -228,33 +238,58 @@ void Population::Crossover(std::vector<Chromosome>& newChromosomes)
 	newChromosomes.resize(m_Chromosomes.size());
 }
 
+void Population::RandomMutation(Chromosome& mutated)
+{
+	Randomizator geneRandomizator(0, static_cast<unsigned>(mutated.Genes.size() - 1));
+
+	SizeType mutatedGene = geneRandomizator.Get();
+	mutated.Genes[mutatedGene] = !mutated.Genes[mutatedGene];
+
+	mutatedGene = geneRandomizator.Get();
+	mutated.Genes[mutatedGene] = !mutated.Genes[mutatedGene];
+
+	mutatedGene = geneRandomizator.Get();
+	mutated.Genes[mutatedGene] = !mutated.Genes[mutatedGene];
+
+	mutatedGene = geneRandomizator.Get();
+	mutated.Genes[mutatedGene] = !mutated.Genes[mutatedGene];
+
+	mutatedGene = geneRandomizator.Get();
+	mutated.Genes[mutatedGene] = !mutated.Genes[mutatedGene];
+}
+
+void Population::SequentialMutation(Chromosome& mutated)
+{
+	Randomizator geneRandomizator(0, static_cast<unsigned>(mutated.Genes.size() - 1));
+	Randomizator sequenceRandomizator(MIN_MUTATION_SEQUENCE, MAX_MUTATION_SEQUENCE);
+
+	SizeType sequenceCurrent = geneRandomizator.Get();
+	SizeType sequenceEnd = sequenceCurrent + sequenceRandomizator.Get();
+
+	while (sequenceCurrent != sequenceEnd && sequenceCurrent < mutated.Genes.size())
+	{
+		mutated.Genes[sequenceCurrent] = !mutated.Genes[sequenceCurrent];
+		++sequenceCurrent;
+	}
+}
+
 void Population::Mutation(std::vector<Chromosome>& newChromosomes)
 {
-	static Coin coin;
-
-	Randomizator randomizator(0, static_cast<unsigned>(newChromosomes[0].Genes.size() - 1));
-
+	Coin coin;
 	SizeType elites = static_cast<SizeType>(std::floor(m_Chromosomes.size() * m_SelectionRatio)) / 2;
 
 	auto chromosomeIterator = newChromosomes.begin() + elites;
 	while (chromosomeIterator != newChromosomes.end())
 	{
-		if (coin.Flip() == Coin::Face::Head && coin.Flip() == Coin::Face::Head)
+		// 12.5%
+		if (coin.Flip() == Coin::Face::Head && coin.Flip() == Coin::Face::Head && coin.Flip() == Coin::Face::Head)
 		{
-			SizeType mutatedGene = randomizator.Get();
-			chromosomeIterator->Genes[mutatedGene] = !chromosomeIterator->Genes[mutatedGene];
-
-			mutatedGene = randomizator.Get();
-			chromosomeIterator->Genes[mutatedGene] = !chromosomeIterator->Genes[mutatedGene];
-
-			mutatedGene = randomizator.Get();
-			chromosomeIterator->Genes[mutatedGene] = !chromosomeIterator->Genes[mutatedGene];
-
-			mutatedGene = randomizator.Get();
-			chromosomeIterator->Genes[mutatedGene] = !chromosomeIterator->Genes[mutatedGene];
-
-			mutatedGene = randomizator.Get();
-			chromosomeIterator->Genes[mutatedGene] = !chromosomeIterator->Genes[mutatedGene];
+			SequentialMutation(*chromosomeIterator);
+		}
+		// 25%
+		else if (coin.Flip() == Coin::Face::Head && coin.Flip() == Coin::Face::Head)
+		{
+			RandomMutation(*chromosomeIterator);
 		}
 
 		++chromosomeIterator;
