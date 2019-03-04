@@ -4,6 +4,7 @@
 
 #include <vector>
 #include <memory>
+#include <thread>
 
 class Population
 {
@@ -34,17 +35,28 @@ public:
 		return m_Chromosomes[m_Fittest];
 	}
 private:
+	void SingleThreadRoutine(std::vector<Chromosome>& newChromosomes);
+
+	void FindFittest();
+	void LaunchThreads(std::vector<Chromosome>& newChromosomes, unsigned threadsCount, std::vector<std::thread>& threads);
+	void MultiThreadRoutine(std::vector<Chromosome>& newChromosomes, unsigned threadsCount);
+
 	void RandomizeChromosome(Chromosome& chromosome);
 
 	void CalculateFitness();
 	Fitness CalculateFitness(const Chromosome& chromosome);
 
 	void Selection(std::vector<Chromosome>& newChromosomes);
-	void Crossover(std::vector<Chromosome>& newChromosomes);
+	void CrossoverSingleThread(std::vector<Chromosome>& newChromosomes);
 
 	void RandomMutation(Chromosome& mutated);
 	void SequentialMutation(Chromosome& mutated);
-	void Mutation(std::vector<Chromosome>& newChromosomes);
+	void MutationSingleThread(std::vector<Chromosome>& newChromosomes);
+
+	void ThreadCalculateFitness(std::vector<Chromosome>& newChromosomes, SizeType start, SizeType end);
+	void ThreadMutation(std::vector<Chromosome>& newChromosomes, SizeType start, SizeType end);
+	void ThreadCrossover(std::vector<Chromosome>& newChromosomes, SizeType start, SizeType end);
+	void ThreadCrossMutateCalcFitness(std::vector<Chromosome>& newChromosomes, SizeType start, SizeType end);
 
 	std::vector<Chromosome> m_Chromosomes;
 	SizeType m_ChromosomeSize;

@@ -15,7 +15,7 @@ int main()
 		HORIZONTAL_VELOCITY,
 		VERTICAL_ACCELERATION,
 		JUMP_ACCELERATION,
-		LevelDescription{ 100, 100 });
+		LevelDescription{ 1000, 100 });
 
 	Population population(POPULATION_SIZE,
 		static_cast<Population::SizeType>(std::floor(game->Level.width / HORIZONTAL_VELOCITY)),

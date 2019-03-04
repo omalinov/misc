@@ -5,6 +5,7 @@
 #include <random>
 #include <algorithm>
 #include <cassert>
+#include <vector>
 
 namespace
 {
@@ -76,12 +77,84 @@ void Population::NextGeneration()
 	newChromosomes.reserve(m_Chromosomes.size());
 
 	Selection(newChromosomes);
-	Crossover(newChromosomes);
-	Mutation(newChromosomes);
+
+	unsigned threadCount = std::thread::hardware_concurrency() / 2;
+
+	if (threadCount == 0)
+	{
+		SingleThreadRoutine(newChromosomes);
+		return;
+	}
+	else
+	{
+		MultiThreadRoutine(newChromosomes, threadCount);
+	}
+}
+
+void Population::SingleThreadRoutine(std::vector<Chromosome>& newChromosomes)
+{
+	CrossoverSingleThread(newChromosomes);
+	MutationSingleThread(newChromosomes);
 
 	m_Chromosomes.swap(newChromosomes);
 
 	CalculateFitness();
+}
+
+void Population::FindFittest()
+{
+	m_Fittest = 0;
+	for (SizeType i = 0; i < m_Chromosomes.size(); ++i)
+	{
+		if (m_Chromosomes[i].Fitness > m_Chromosomes[m_Fittest].Fitness)
+		{
+			m_Fittest = i;
+		}
+	}
+}
+
+void Population::LaunchThreads(std::vector<Chromosome>& newChromosomes, unsigned threadsCount, std::vector<std::thread>& threads)
+{
+	SizeType selected = static_cast<SizeType>(std::floor(m_Chromosomes.size() * m_SelectionRatio));
+	/// Skip elites because they will not be changed.
+	SizeType chromosomesPerThread = static_cast<SizeType>(std::ceil((m_Chromosomes.size() - selected) / threadsCount));
+
+	SizeType startChunk = selected;
+	for (unsigned i = 0; i < threadsCount - 1; ++i)
+	{
+		SizeType endChunk = startChunk + chromosomesPerThread;
+		threads[i] = std::thread(&Population::ThreadCrossMutateCalcFitness,
+			this,
+			std::ref(newChromosomes),
+			startChunk,
+			endChunk);
+
+		startChunk = endChunk;
+	}
+
+	/// Last chunk might have a different size.
+	threads[threadsCount - 1] = std::thread(&Population::ThreadCrossMutateCalcFitness,
+		this,
+		std::ref(newChromosomes),
+		startChunk,
+		m_Chromosomes.size());
+}
+
+void Population::MultiThreadRoutine(std::vector<Chromosome>& newChromosomes, unsigned threadsCount)
+{
+	newChromosomes.resize(m_Chromosomes.size());
+
+	std::vector<std::thread> threads(threadsCount);
+	LaunchThreads(newChromosomes, threadsCount, threads);
+
+	for (unsigned i = 0; i < threadsCount; ++i)
+	{
+		threads[i].join();
+	}
+
+	m_Chromosomes.swap(newChromosomes);
+
+	FindFittest();
 }
 
 void Population::RandomizeChromosome(Chromosome& chromosome)
@@ -214,7 +287,7 @@ namespace
 	}
 };
 
-void Population::Crossover(std::vector<Chromosome>& newChromosomes)
+void Population::CrossoverSingleThread(std::vector<Chromosome>& newChromosomes)
 {
 	Randomizator randomizatorElites(0, static_cast<unsigned>(newChromosomes.size() - 1));
 	Randomizator randomizatorAll(0, static_cast<unsigned>(m_Chromosomes.size() - 1));
@@ -273,7 +346,7 @@ void Population::SequentialMutation(Chromosome& mutated)
 	}
 }
 
-void Population::Mutation(std::vector<Chromosome>& newChromosomes)
+void Population::MutationSingleThread(std::vector<Chromosome>& newChromosomes)
 {
 	Coin coin;
 	SizeType elites = static_cast<SizeType>(std::floor(m_Chromosomes.size() * m_SelectionRatio)) / 2;
@@ -294,4 +367,70 @@ void Population::Mutation(std::vector<Chromosome>& newChromosomes)
 
 		++chromosomeIterator;
 	}
+}
+
+void Population::ThreadCalculateFitness(std::vector<Chromosome>& newChromosomes, SizeType start, SizeType end)
+{
+	SizeType currentChromosome = start;
+	while (currentChromosome < end)
+	{
+		newChromosomes[currentChromosome].Fitness = CalculateFitness(newChromosomes[currentChromosome]);
+		++currentChromosome;
+	}
+}
+
+void Population::ThreadMutation(std::vector<Chromosome>& newChromosomes, SizeType start, SizeType end)
+{
+	Coin coin;
+
+	SizeType currentChromosome = start;
+	while (currentChromosome < end)
+	{
+		// 12.5%
+		if (coin.Flip() == Coin::Face::Head && coin.Flip() == Coin::Face::Head && coin.Flip() == Coin::Face::Head)
+		{
+			SequentialMutation(newChromosomes[currentChromosome]);
+		}
+		// 25%
+		else if (coin.Flip() == Coin::Face::Head && coin.Flip() == Coin::Face::Head)
+		{
+			RandomMutation(newChromosomes[currentChromosome]);
+		}
+
+		++currentChromosome;
+	}
+}
+
+void Population::ThreadCrossover(std::vector<Chromosome>& newChromosomes, SizeType start, SizeType end)
+{
+	SizeType elites = static_cast<SizeType>(std::floor(m_Chromosomes.size() * m_SelectionRatio));
+	Randomizator randomizatorElites(0, elites);
+	Randomizator randomizatorAll(0, static_cast<unsigned>(m_Chromosomes.size() - 1));
+
+	SizeType currentChromosome = start;
+	while (currentChromosome < end)
+	{
+		SizeType firstIndex = randomizatorElites.Get();
+		SizeType secondIndex = randomizatorAll.Get();
+		while (firstIndex == secondIndex)
+		{
+			secondIndex = randomizatorAll.Get();
+		}
+
+		Chromosome& first = m_Chromosomes[firstIndex];
+		Chromosome& second = m_Chromosomes[secondIndex];
+
+		newChromosomes[currentChromosome++] = DoCrossover(first, second);
+		if (currentChromosome < end)
+		{
+			newChromosomes[currentChromosome++] = DoCrossover(second, first);
+		}
+	}
+}
+
+void Population::ThreadCrossMutateCalcFitness(std::vector<Chromosome>& newChromosomes, SizeType start, SizeType end)
+{
+	ThreadCrossover(newChromosomes, start, end);
+	ThreadMutation(newChromosomes, start, end);
+	ThreadCalculateFitness(newChromosomes, start, end);
 }
